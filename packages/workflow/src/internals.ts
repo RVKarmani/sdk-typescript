@@ -1569,6 +1569,7 @@ export class Activator implements ActivationHandler {
       type: 'workflow',
       namespace: this.info.namespace,
       workflowId: this.info.workflowId,
+      workflowType: this.info.workflowType,
     };
   }
 }

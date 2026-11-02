@@ -608,11 +608,16 @@ export class WorkflowClient extends BaseClient {
     return this.connection.workflowService;
   }
 
-  protected workflowSerializationContext(workflowId: string): WorkflowSerializationContext {
+  /**
+   * `workflowType` is supplied only where the caller already has it (for example, when starting a
+   * workflow). Handles obtained by workflow ID do not know the type, and no lookup is made for it.
+   */
+  protected workflowSerializationContext(workflowId: string, workflowType?: string): WorkflowSerializationContext {
     return {
       type: 'workflow',
       namespace: this.options.namespace,
       workflowId,
+      workflowType,
     };
   }
 
@@ -1544,7 +1549,7 @@ export class WorkflowClient extends BaseClient {
     const { identity } = this.options;
     const { options, workflowType, signalName, signalArgs, signalTypeInfo, headers } = input;
     const dataConverter = this.dataConverter;
-    const context = this.workflowSerializationContext(options.workflowId);
+    const context = this.workflowSerializationContext(options.workflowId, workflowType);
     const internalOptions = (options as InternalWorkflowStartOptions)[InternalWorkflowStartOptionsSymbol];
     const req: temporal.api.workflowservice.v1.ISignalWithStartWorkflowExecutionRequest = {
       namespace: this.options.namespace,
@@ -1674,7 +1679,7 @@ export class WorkflowClient extends BaseClient {
     const { options: opts, workflowType, headers } = input;
     const { identity, namespace } = this.options;
     const dataConverter = this.dataConverter;
-    const context = this.workflowSerializationContext(opts.workflowId);
+    const context = this.workflowSerializationContext(opts.workflowId, workflowType);
     const internalOptions = (opts as InternalWorkflowStartOptions)[InternalWorkflowStartOptionsSymbol];
     const supportsEagerStart = (this.connection as InternalConnectionLike)?.[InternalConnectionLikeSymbol]
       ?.supportsEagerStart;
@@ -1970,7 +1975,7 @@ export class WorkflowClient extends BaseClient {
           this.client.options.namespace
         );
         const userMetadata = raw.executionConfig?.userMetadata;
-        const context = this.client.workflowSerializationContext(workflowId);
+        const context = this.client.workflowSerializationContext(workflowId, info.type);
         return {
           ...info,
           staticDetails: async () =>

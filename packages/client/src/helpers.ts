@@ -78,6 +78,7 @@ export async function executionInfoFromRaw<T>(
       type: 'workflow',
       namespace,
       workflowId,
+      workflowType: raw.type?.name || undefined,
     }),
     searchAttributes: decodeSearchAttributes(raw.searchAttributes?.indexedFields),
     typedSearchAttributes: decodeTypedSearchAttributes(raw.searchAttributes?.indexedFields),

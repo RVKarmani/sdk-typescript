@@ -3,7 +3,7 @@ import test from 'ava';
 import { firstValueFrom, Subject } from 'rxjs';
 import type { coresdk } from '@temporalio/proto';
 import { Context } from '@temporalio/activity';
-import type { PayloadCodec } from '@temporalio/common';
+import type { PayloadCodec, SerializationContext } from '@temporalio/common';
 import { defaultPayloadConverter } from '@temporalio/common';
 import type { Worker } from './mock-native-worker';
 import { isolateFreeWorker } from './mock-native-worker';
@@ -257,4 +257,79 @@ test('activity start heartbeat-details codec decode failure is encoded with acti
       'Failed to parse heartbeat details for activity act-1: codec.decode.bound|activity.worker-test.wfid.act-1.false|heartbeat-details'
     );
   });
+});
+
+test('activity worker contexts carry activity and workflow type names for inputs, heartbeats, and results', async (t) => {
+  const contexts: Array<[string, SerializationContext | undefined]> = [];
+  const recordingCodec: PayloadCodec = {
+    async encode(payloads, context) {
+      contexts.push(['encode', context]);
+      return payloads;
+    },
+    async decode(payloads, context) {
+      contexts.push(['decode', context]);
+      return payloads;
+    },
+  };
+  const worker = isolateFreeWorker({
+    namespace: 'worker-test',
+    taskQueue: 'unused',
+    dataConverter: { payloadCodecs: [recordingCodec] },
+    activities: {
+      async typedActivity(input: string) {
+        Context.current().heartbeat('beat');
+        return `${input}-done`;
+      },
+    },
+  });
+  worker.native.activityHeartbeatCallback = () => undefined;
+
+  const run = async (start: coresdk.activity_task.IStart) => {
+    contexts.length = 0;
+    await worker.native.runActivityTask({
+      taskToken: Buffer.from(randomUUID()),
+      start: { activityType: 'typedActivity', input: [defaultPayloadConverter.toPayload('in')], ...start },
+    });
+    return [...contexts];
+  };
+
+  const results = await worker.runUntil(async () => [
+    await run({
+      activityId: 'act-1',
+      workflowType: 'ParentWorkflow',
+      workflowExecution: { workflowId: 'wfid', runId: 'runid' },
+    }),
+    await run({
+      activityId: '3',
+      isLocal: true,
+      workflowType: 'ParentWorkflow',
+      workflowExecution: { workflowId: 'wfid', runId: 'runid' },
+    }),
+    // A standalone activity has no parent workflow, so no workflow type even if the task carries one.
+    await run({ activityId: 'standalone-1', workflowType: 'Ignored' }),
+  ]);
+  const [workflowStarted, local, standalone] = results;
+  // Input decode, plus heartbeat and result encodes (the mock native worker also decodes heartbeats).
+  t.true(workflowStarted.filter(([op]) => op === 'decode').length >= 1);
+  t.true(workflowStarted.filter(([op]) => op === 'encode').length >= 2);
+  for (const [, context] of workflowStarted) {
+    t.like(context, {
+      type: 'activity',
+      namespace: 'worker-test',
+      activityId: 'act-1',
+      activityType: 'typedActivity',
+      workflowId: 'wfid',
+      workflowType: 'ParentWorkflow',
+      isLocal: false,
+    });
+  }
+
+  for (const [, context] of local) {
+    t.like(context, { activityType: 'typedActivity', workflowType: 'ParentWorkflow', isLocal: true });
+  }
+
+  t.true(standalone.length >= 2);
+  for (const [, context] of standalone) {
+    t.like(context, { activityType: 'typedActivity', workflowId: undefined, workflowType: undefined });
+  }
 });

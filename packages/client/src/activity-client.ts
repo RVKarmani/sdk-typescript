@@ -400,6 +400,7 @@ export class ActivityClient extends AsyncCompletionClient implements TypedActivi
       type: 'activity',
       namespace: this.options.namespace,
       activityId: input.options.id,
+      activityType: input.activityType,
       isLocal: false,
     };
 
@@ -529,6 +530,7 @@ export class ActivityClient extends AsyncCompletionClient implements TypedActivi
         type: 'activity',
         namespace,
         activityId: input.activityId,
+        activityType: resp.info.activityType?.name || undefined,
         isLocal: false,
       };
       return buildActivityDescription(resp, this.dataConverter, context);

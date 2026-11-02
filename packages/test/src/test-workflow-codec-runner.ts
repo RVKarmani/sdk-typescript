@@ -1,5 +1,5 @@
 import test from 'ava';
-import type { Payload, PayloadCodec } from '@temporalio/common';
+import type { Payload, PayloadCodec, SerializationContext } from '@temporalio/common';
 import { ApplicationFailure, defaultFailureConverter, defaultPayloadConverter } from '@temporalio/common';
 import { walkPayloadsInMessage } from '@temporalio/common/internal/internal-non-workflow';
 import { coresdk } from '@temporalio/proto';
@@ -566,4 +566,217 @@ test('ordinary Nexus calls with a System Nexus service name are not rewritten', 
       'SignalWithStartWorkflowExecution'
     )}`,
   ]);
+});
+
+/** Records the full context the codec receives for each labelled payload, keyed by operation and label. */
+class RecordingPayloadCodec implements PayloadCodec {
+  readonly contexts = new Map<string, SerializationContext | undefined>();
+
+  async encode(payloads: Payload[], context?: SerializationContext): Promise<Payload[]> {
+    return this.record('encode', payloads, context);
+  }
+
+  async decode(payloads: Payload[], context?: SerializationContext): Promise<Payload[]> {
+    return this.record('decode', payloads, context);
+  }
+
+  private record(op: string, payloads: Payload[], context: SerializationContext | undefined): Payload[] {
+    for (const p of payloads) {
+      const { label } = defaultPayloadConverter.fromPayload<{ label: string }>(p);
+      this.contexts.set(`${op}|${label}`, context);
+    }
+    return payloads;
+  }
+}
+
+const parentContext = {
+  type: 'workflow' as const,
+  namespace: 'default',
+  workflowId: 'wf-1',
+  workflowType: 'ParentWorkflow',
+};
+
+test('activity contexts carry activity and parent workflow types across schedule and out-of-order resolution', async (t) => {
+  const codec = new RecordingPayloadCodec();
+  const runner = new WorkflowCodecRunner([codec], parentContext);
+
+  await runner.encodeCompletion({
+    successful: {
+      commands: [
+        { scheduleActivity: { seq: 1, activityId: 'a-1', activityType: 'charge', arguments: [payload('in-1')] } },
+        {
+          scheduleLocalActivity: { seq: 2, activityId: '2', activityType: 'lookup', arguments: [payload('in-2')] },
+        },
+      ],
+    },
+  });
+  const expected1 = {
+    type: 'activity',
+    namespace: 'default',
+    workflowId: 'wf-1',
+    workflowType: 'ParentWorkflow',
+    activityId: 'a-1',
+    activityType: 'charge',
+    isLocal: false,
+  };
+  const expected2 = { ...expected1, activityId: '2', activityType: 'lookup', isLocal: true };
+  t.deepEqual(codec.contexts.get('encode|in-1'), expected1);
+  t.deepEqual(codec.contexts.get('encode|in-2'), expected2);
+
+  // Resolve in the reverse order of scheduling; each result keeps its own activity's names.
+  await runner.decodeActivation({
+    runId: 'run-1',
+    jobs: [{ resolveActivity: { seq: 2, result: { completed: { result: payload('out-2') } } } }],
+  });
+  await runner.decodeActivation({
+    runId: 'run-1',
+    jobs: [
+      {
+        resolveActivity: {
+          seq: 1,
+          result: { failed: { failure: failureWithDetail('fail-1') } },
+        },
+      },
+    ],
+  });
+  t.deepEqual(codec.contexts.get('decode|out-2'), expected2);
+  t.deepEqual(codec.contexts.get('decode|fail-1'), expected1);
+});
+
+test('child workflow contexts use the child workflow type, never the parent type', async (t) => {
+  const codec = new RecordingPayloadCodec();
+  const runner = new WorkflowCodecRunner([codec], parentContext);
+
+  await runner.encodeCompletion({
+    successful: {
+      commands: [
+        {
+          startChildWorkflowExecution: {
+            seq: 1,
+            workflowId: 'child-1',
+            workflowType: 'ChildWorkflow',
+            input: [payload('child-in')],
+          },
+        },
+        { startChildWorkflowExecution: { seq: 2, workflowId: 'child-2', input: [payload('untyped-child-in')] } },
+      ],
+    },
+  });
+  const childContext = { type: 'workflow', namespace: 'default', workflowId: 'child-1', workflowType: 'ChildWorkflow' };
+  t.deepEqual(codec.contexts.get('encode|child-in'), childContext);
+  t.is((codec.contexts.get('encode|untyped-child-in') as any).workflowType, undefined);
+
+  await runner.decodeActivation({
+    runId: 'run-1',
+    jobs: [{ resolveChildWorkflowExecution: { seq: 1, result: { completed: { result: payload('child-out') } } } }],
+  });
+  t.deepEqual(codec.contexts.get('decode|child-out'), childContext);
+});
+
+test('external signal and cancel contexts leave the unknown target workflow type undefined', async (t) => {
+  const codec = new RecordingPayloadCodec();
+  const runner = new WorkflowCodecRunner([codec], parentContext);
+
+  await runner.encodeCompletion({
+    successful: {
+      commands: [
+        {
+          signalExternalWorkflowExecution: {
+            seq: 1,
+            workflowExecution: { namespace: 'default', workflowId: 'other' },
+            signalName: 's',
+            args: [payload('external-signal')],
+          },
+        },
+        { signalExternalWorkflowExecution: { seq: 2, childWorkflowId: 'child-1', args: [payload('child-signal')] } },
+        { requestCancelExternalWorkflowExecution: { seq: 3, workflowExecution: { workflowId: 'other' } } },
+      ],
+    },
+  });
+  t.deepEqual(codec.contexts.get('encode|external-signal'), {
+    type: 'workflow',
+    namespace: 'default',
+    workflowId: 'other',
+  });
+  t.is((codec.contexts.get('encode|child-signal') as any).workflowType, undefined);
+
+  await runner.decodeActivation({
+    runId: 'run-1',
+    jobs: [
+      { resolveSignalExternalWorkflow: { seq: 1, failure: failureWithDetail('signal-failure') } },
+      { resolveRequestCancelExternalWorkflow: { seq: 3, failure: failureWithDetail('cancel-failure') } },
+    ],
+  });
+  t.is((codec.contexts.get('decode|signal-failure') as any).workflowType, undefined);
+  t.is((codec.contexts.get('decode|cancel-failure') as any).workflowId, 'other');
+  t.is((codec.contexts.get('decode|cancel-failure') as any).workflowType, undefined);
+});
+
+test('continue-as-new payloads use the next run workflow type', async (t) => {
+  const codec = new RecordingPayloadCodec();
+  const runner = new WorkflowCodecRunner([codec], parentContext);
+
+  await runner.encodeCompletion({
+    successful: {
+      commands: [
+        {
+          continueAsNewWorkflowExecution: {
+            workflowType: 'NextWorkflow',
+            arguments: [payload('can-arg')],
+            memo: { m: payload('can-memo') },
+          },
+        },
+      ],
+    },
+  });
+  t.deepEqual(codec.contexts.get('encode|can-arg'), { ...parentContext, workflowType: 'NextWorkflow' });
+  t.deepEqual(codec.contexts.get('encode|can-memo'), { ...parentContext, workflowType: 'NextWorkflow' });
+
+  const sameTypeCodec = new RecordingPayloadCodec();
+  await new WorkflowCodecRunner([sameTypeCodec], parentContext).encodeCompletion({
+    successful: { commands: [{ continueAsNewWorkflowExecution: { arguments: [payload('can-same')] } }] },
+  });
+  t.deepEqual(sameTypeCodec.contexts.get('encode|can-same'), parentContext);
+});
+
+test('activity contexts with the same seq in different workflows do not leak names', async (t) => {
+  const codecA = new RecordingPayloadCodec();
+  const codecB = new RecordingPayloadCodec();
+  const runnerA = new WorkflowCodecRunner([codecA], { ...parentContext, workflowId: 'wf-a', workflowType: 'A' });
+  const runnerB = new WorkflowCodecRunner([codecB], { ...parentContext, workflowId: 'wf-b', workflowType: 'B' });
+  for (const [runner, type] of [
+    [runnerA, 'actA'],
+    [runnerB, 'actB'],
+  ] as const) {
+    await runner.encodeCompletion({
+      successful: { commands: [{ scheduleActivity: { seq: 1, activityId: '1', activityType: type } }] },
+    });
+  }
+  await runnerB.decodeActivation({
+    runId: 'run-b',
+    jobs: [{ resolveActivity: { seq: 1, result: { completed: { result: payload('out') } } } }],
+  });
+  await runnerA.decodeActivation({
+    runId: 'run-a',
+    jobs: [{ resolveActivity: { seq: 1, result: { completed: { result: payload('out') } } } }],
+  });
+  t.like(codecA.contexts.get('decode|out'), { workflowType: 'A', activityType: 'actA' });
+  t.like(codecB.contexts.get('decode|out'), { workflowType: 'B', activityType: 'actB' });
+});
+
+test('contexts without type names still decode, matching the previous behavior', async (t) => {
+  const codec = new RecordingPayloadCodec();
+  const runner = new WorkflowCodecRunner([codec], { type: 'workflow', namespace: 'default', workflowId: 'wf-1' });
+  await runner.encodeCompletion({
+    successful: { commands: [{ scheduleActivity: { seq: 1, activityId: '1', arguments: [payload('in')] } }] },
+  });
+  t.deepEqual(codec.contexts.get('encode|in'), {
+    type: 'activity',
+    namespace: 'default',
+    workflowId: 'wf-1',
+    workflowType: undefined,
+    activityId: '1',
+    activityType: undefined,
+    isLocal: false,
+  });
 });

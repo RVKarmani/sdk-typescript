@@ -52,7 +52,9 @@ export class MockActivityEnvironment extends events.EventEmitter {
         type: 'activity',
         namespace: activityInfo.activityNamespace, // eslint-disable-line @typescript-eslint/no-deprecated
         activityId: activityInfo.activityId,
+        activityType: activityInfo.activityType,
         workflowId: activityInfo.workflowExecution?.workflowId,
+        workflowType: activityInfo.workflowType,
         isLocal: activityInfo.isLocal,
       },
       undefined,

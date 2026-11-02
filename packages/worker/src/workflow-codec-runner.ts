@@ -76,7 +76,9 @@ export class WorkflowCodecRunner {
       type: 'activity',
       namespace: this.workflowContext.namespace,
       workflowId: this.workflowContext.workflowId,
+      workflowType: this.workflowContext.workflowType,
       activityId: command.activityId || undefined,
+      activityType: command.activityType || undefined,
       isLocal,
     };
   }
@@ -107,9 +109,21 @@ export class WorkflowCodecRunner {
       type: 'workflow',
       namespace: command.namespace || this.workflowContext.namespace,
       workflowId: command.workflowId,
+      workflowType: command.workflowType || undefined,
     };
   }
 
+  /** Continue-as-new payloads belong to the next run, which may be of a different workflow type. */
+  private continueAsNewContext(
+    command: coresdk.workflow_commands.IContinueAsNewWorkflowExecution
+  ): WorkflowSerializationContext {
+    return { ...this.workflowContext, workflowType: command.workflowType || this.workflowContext.workflowType };
+  }
+
+  /**
+   * Signals and cancellations name only the target execution, so the target's workflow type is not
+   * known here and is left undefined rather than inherited from this workflow.
+   */
   private externalWorkflowContext(
     command:
       | coresdk.workflow_commands.ISignalExternalWorkflowExecution
@@ -273,6 +287,9 @@ export class WorkflowCodecRunner {
           if (typeName === 'coresdk.workflow_commands.ScheduleNexusOperation') {
             const schedule = message as coresdk.workflow_commands.IScheduleNexusOperation;
             return this.nexusOperationContext(schedule, isSystemNexus(schedule)) ?? context;
+          }
+          if (typeName === 'coresdk.workflow_commands.ContinueAsNewWorkflowExecution') {
+            return this.continueAsNewContext(message as coresdk.workflow_commands.IContinueAsNewWorkflowExecution);
           }
           if (typeName === 'coresdk.workflow_commands.SignalExternalWorkflowExecution') {
             return (

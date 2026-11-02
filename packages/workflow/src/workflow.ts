@@ -95,27 +95,40 @@ function currentWorkflowSerializationContext(info: WorkflowInfo): WorkflowSerial
     type: 'workflow',
     namespace: info.namespace,
     workflowId: info.workflowId,
+    workflowType: info.workflowType,
   };
 }
 
-function targetWorkflowSerializationContext(info: WorkflowInfo, workflowId: string): WorkflowSerializationContext {
+/**
+ * Context for a payload owned by another workflow. `workflowType` is the target's type and is
+ * left undefined when unknown; it must never fall back to the calling workflow's type.
+ */
+function targetWorkflowSerializationContext(
+  info: WorkflowInfo,
+  workflowId: string,
+  workflowType?: string
+): WorkflowSerializationContext {
   return {
     type: 'workflow',
     namespace: info.namespace,
     workflowId,
+    workflowType,
   };
 }
 
 function activitySerializationContext(
   info: WorkflowInfo,
   activityId: string | undefined,
+  activityType: string,
   isLocal: boolean
 ): ActivitySerializationContext {
   return {
     type: 'activity',
     namespace: info.namespace,
     activityId,
+    activityType,
     workflowId: info.workflowId,
+    workflowType: info.workflowType,
     isLocal,
   };
 }
@@ -225,7 +238,7 @@ function scheduleActivityNextHandler({
   const activator = getActivator();
   validateActivityOptions(options);
   const activityId = options.activityId ?? `${seq}`;
-  const context = activitySerializationContext(activator.info, activityId, false);
+  const context = activitySerializationContext(activator.info, activityId, activityType, false);
   return new Promise((resolve, reject) => {
     const scope = CancellationScope.current();
     if (scope.consideredCancelled) {
@@ -292,7 +305,7 @@ async function scheduleLocalActivityNextHandler({
 }: LocalActivityInput): Promise<unknown> {
   const activator = getActivator();
   const activityId = `${seq}`;
-  const context = activitySerializationContext(activator.info, activityId, true);
+  const context = activitySerializationContext(activator.info, activityId, activityType, true);
 
   // Eagerly fail the local activity if the worker will not be able to execute it,
   // e.g. the given activity type is not registered on the local activity worker
@@ -449,7 +462,7 @@ function startChildWorkflowExecutionNextHandler({
 }: StartChildWorkflowExecutionInput): Promise<[Promise<string>, Promise<unknown>]> {
   const activator = getActivator();
   const workflowId = options.workflowId ?? uuid4();
-  const context = targetWorkflowSerializationContext(activator.info, workflowId);
+  const context = targetWorkflowSerializationContext(activator.info, workflowId, workflowType);
   const startPromise = new Promise<string>((resolve, reject) => {
     const scope = CancellationScope.current();
     if (scope.consideredCancelled) {
@@ -1226,9 +1239,10 @@ export function makeContinueAsNewFunc<F extends Workflow>(
   };
 
   return (...args: Parameters<F>): Promise<never> => {
-    const context = currentWorkflowSerializationContext(info);
     const fn = composeInterceptors(activator.interceptors.outbound, 'continueAsNew', async (input) => {
       const { headers, args, options } = input;
+      // Arguments and memo belong to the next run, which may be of a different workflow type.
+      const context = { ...currentWorkflowSerializationContext(info), workflowType: options.workflowType };
       const typeInfo =
         options.typeInfo ?? (options.workflowType === info.workflowType ? activator.typeInfo : undefined);
       throw new ContinueAsNew(

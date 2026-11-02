@@ -1,0 +1,1 @@
+**Experimental**: Workflow serialization contexts now include an optional `workflowType`, and activity serialization contexts include optional `activityType` and `workflowType`, populated wherever the SDK already knows them.

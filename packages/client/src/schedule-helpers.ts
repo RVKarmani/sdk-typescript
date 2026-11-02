@@ -243,11 +243,16 @@ export function encodeScheduleSpec(spec: ScheduleSpec): temporal.api.schedule.v1
   };
 }
 
-function workflowSerializationContext(namespace: string, workflowId: string): WorkflowSerializationContext {
+function workflowSerializationContext(
+  namespace: string,
+  workflowId: string,
+  workflowType: string | undefined
+): WorkflowSerializationContext {
   return {
     type: 'workflow',
     namespace,
     workflowId,
+    workflowType,
   };
 }
 
@@ -257,7 +262,7 @@ export async function encodeScheduleAction(
   action: CompiledScheduleAction,
   headers: Headers
 ): Promise<temporal.api.schedule.v1.IScheduleAction> {
-  const context = workflowSerializationContext(namespace, action.workflowId);
+  const context = workflowSerializationContext(namespace, action.workflowId, action.workflowType);
   return {
     startWorkflow: {
       workflowId: action.workflowId,
@@ -333,7 +338,11 @@ export async function decodeScheduleAction(
   pb: temporal.api.schedule.v1.IScheduleAction
 ): Promise<ScheduleDescriptionAction> {
   if (pb.startWorkflow) {
-    const context = workflowSerializationContext(namespace, pb.startWorkflow.workflowId!);
+    const context = workflowSerializationContext(
+      namespace,
+      pb.startWorkflow.workflowId!,
+      pb.startWorkflow.workflowType?.name || undefined
+    );
     const { staticSummary, staticDetails } = await decodeUserMetadata(
       dataConverter,
       pb.startWorkflow?.userMetadata,

@@ -14,6 +14,16 @@ export interface WorkflowSerializationContext {
   namespace: string;
   /** Workflow ID of the workflow that owns the payload. */
   workflowId: string;
+  /**
+   * Workflow type of the workflow that owns the payload, when known.
+   *
+   * For a child or external workflow this is the target's type, never the caller's. It is
+   * best-effort: the SDK sets it only where the type is already available and never looks it up,
+   * so it may be present when a payload is encoded and absent when the same payload is decoded
+   * (for example, a handle obtained by workflow ID alone, or a signal to an external workflow).
+   * Codecs must not require it to decode a payload.
+   */
+  workflowType?: string;
 }
 
 /**
@@ -40,6 +50,19 @@ export interface ActivitySerializationContext {
   activityId?: string;
   /** Workflow ID of the workflow that scheduled the activity, when known. */
   workflowId?: string;
+  /**
+   * Activity type of the activity that owns the payload, when known.
+   *
+   * Best-effort, like {@link WorkflowSerializationContext.workflowType}: for example, it is absent
+   * for asynchronous completion by task token or activity ID. Codecs must not require it to decode
+   * a payload.
+   */
+  activityType?: string;
+  /**
+   * Workflow type of the workflow that scheduled the activity, when known. Absent for standalone
+   * activities and wherever the type is unavailable. Codecs must not require it to decode a payload.
+   */
+  workflowType?: string;
   /** Whether the activity is a local activity started from a workflow. */
   isLocal: boolean;
 }
@@ -103,11 +126,13 @@ export function isSerializationContext(value: unknown): value is SerializationCo
     );
   }
   if (typeof context.namespace !== 'string') return false;
+  if (context.workflowType != null && typeof context.workflowType !== 'string') return false;
   if (context.type === 'workflow') return typeof context.workflowId === 'string';
   return (
     context.type === 'activity' &&
     typeof context.isLocal === 'boolean' &&
     (context.activityId == null || typeof context.activityId === 'string') &&
+    (context.activityType == null || typeof context.activityType === 'string') &&
     (context.workflowId == null || typeof context.workflowId === 'string')
   );
 }

@@ -1608,7 +1608,8 @@ export class Worker {
 
       let workflowCodecRunner = workflow?.workflowCodecRunner;
       if (workflowCodecRunner == null) {
-        const workflowId = activation.jobs?.find((job) => job.initializeWorkflow)?.initializeWorkflow?.workflowId;
+        const initializeWorkflow = activation.jobs?.find((job) => job.initializeWorkflow)?.initializeWorkflow;
+        const workflowId = initializeWorkflow?.workflowId;
         if (workflowId == null)
           throw new IllegalStateError(
             'Received workflow activation for an untracked workflow with no init workflow job'
@@ -1617,6 +1618,7 @@ export class Worker {
           type: 'workflow',
           namespace: this.options.namespace,
           workflowId,
+          workflowType: initializeWorkflow?.workflowType || undefined,
         });
       }
       const { externalStorage } = this.options.loadedDataConverter;
@@ -2621,7 +2623,9 @@ function activitySerializationContextFromInfo(info: ActivityInfo): ActivitySeria
     type: 'activity',
     namespace: info.activityNamespace, // eslint-disable-line @typescript-eslint/no-deprecated
     activityId: info.activityId,
+    activityType: info.activityType,
     workflowId: info.workflowExecution?.workflowId,
+    workflowType: info.workflowType,
     isLocal: info.isLocal,
   };
 }
@@ -2634,7 +2638,10 @@ function activitySerializationContextFromTaskStart(
     type: 'activity',
     namespace: activityNamespace,
     activityId: start.activityId || undefined,
+    activityType: start.activityType || undefined,
     workflowId: start.workflowExecution?.workflowId ?? undefined,
+    // Matches ActivityInfo.workflowType, which is only set for activities started by a workflow.
+    workflowType: (start.workflowExecution?.workflowId && start.workflowType) || undefined,
     isLocal: start.isLocal,
   };
 }

@@ -290,6 +290,7 @@ function startNexusOperationNextHandler({
     type: 'workflow',
     namespace: activator.info.namespace,
     workflowId: activator.info.workflowId,
+    workflowType: activator.info.workflowType,
   };
   const serialization = serializeNexusOperation(
     { input, endpoint, service, options, operation, inputType, outputType },

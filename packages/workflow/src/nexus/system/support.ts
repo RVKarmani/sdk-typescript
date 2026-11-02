@@ -67,6 +67,7 @@ export function signalWithStartWorkflowSerializationContext(
     type: 'workflow',
     namespace: request.namespace ?? workflowInfo().namespace,
     workflowId: request.id,
+    workflowType: workflowFunctionName(request.workflow),
   };
 }
 
